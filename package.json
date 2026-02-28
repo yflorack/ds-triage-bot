@@ -1,0 +1,23 @@
+{
+  "name": "ds-triage-bot",
+  "version": "1.0.0",
+  "description": "AI-powered design system triage bot for GitHub Actions",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc && ncc build lib/index.js -o dist --source-map --license licenses.txt",
+    "lint": "eslint src/**/*.ts --fix",
+    "test": "echo \"Tests placeholder\" && exit 0"
+  },
+  "keywords": ["github-action", "triage", "design-system", "ai"],
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0",
+    "@anthropic-ai/sdk": "^0.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@vercel/ncc": "^0.38.1",
+    "typescript": "^5.3.3"
+  }
+}

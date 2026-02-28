@@ -1,0 +1,25 @@
+name: "DS Triage Bot"
+description: "AI-powered design system triage for issues and PRs using Anthropic Claude"
+author: "Design Systems Team"
+
+inputs:
+  anthropic_model:
+    description: "Anthropic model to use for triage"
+    required: false
+    default: "claude-sonnet-4-20250514"
+  max_tokens:
+    description: "Maximum tokens for the model response"
+    required: false
+    default: "700"
+  dry_run:
+    description: "If true, log actions but do not apply labels or post comments"
+    required: false
+    default: "false"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"
+
+branding:
+  icon: "tag"
+  color: "purple"
