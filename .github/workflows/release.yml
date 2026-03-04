@@ -31,7 +31,7 @@ jobs:
             ## Usage
 
             ```yaml
-            - uses: yflorack/ds-triage-bot@${{ github.ref_name }}
+            - uses: ${{ github.repository }}@${{ github.ref_name }}
               with:
                 github-token: ${{ secrets.GITHUB_TOKEN }}
               env:

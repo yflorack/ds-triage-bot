@@ -1,19 +1,139 @@
+# This workflow is for the ds-triage-bot repo itself (self-testing).
+# For OTHER repos, use: yflorack/ds-triage-bot@v1 (see README.md)
+
 name: DS Triage Bot
 
 on:
   issues:
     types: [opened, edited]
-  pull_request:
-    types: [opened, edited]
+  pull_request_target:
+    types: [opened, edited, synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
 
 jobs:
   triage:
     runs-on: ubuntu-latest
+    outputs:
+      category: ${{ steps.triage.outputs.category }}
+      risk: ${{ steps.triage.outputs.risk }}
+      owner: ${{ steps.triage.outputs.owner }}
+      confidence: ${{ steps.triage.outputs.confidence }}
+      estimated_effort: ${{ steps.triage.outputs.estimated_effort }}
+      breaking_change: ${{ steps.triage.outputs.breaking_change }}
+      ticket_json: ${{ steps.triage.outputs.ticket_json }}
+      triage_json: ${{ steps.triage.outputs.triage_json }}
+      summary: ${{ steps.triage.outputs.summary }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout action
+        uses: actions/checkout@v4
 
-      - uses: yflorack/ds-triage-bot@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run DS Triage Bot
+        id: triage
+        uses: ./
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          anthropic_model: "claude-sonnet-4-20250514"
+          max_tokens: "1024"
+          dry_run: "false"
+
+      - name: Log triage outputs
+        run: |
+          echo "Category: ${{ steps.triage.outputs.category }}"
+          echo "Risk: ${{ steps.triage.outputs.risk }}"
+          echo "Effort: ${{ steps.triage.outputs.estimated_effort }}"
+          echo "Breaking: ${{ steps.triage.outputs.breaking_change }}"
+          echo "Components: ${{ steps.triage.outputs.related_components }}"
+          echo "Assignee role: ${{ steps.triage.outputs.suggested_assignee_role }}"
+
+  # ────────────────────────────────────────────────────────────────
+  # Optional: Create Jira ticket from triage output
+  # Uncomment and configure to enable automatic ticket creation.
+  # Requires JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN secrets.
+  # ────────────────────────────────────────────────────────────────
+  # create-jira-ticket:
+  #   needs: triage
+  #   if: needs.triage.outputs.confidence >= 0.7
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Parse ticket template
+  #       id: ticket
+  #       run: |
+  #         TICKET='${{ needs.triage.outputs.ticket_json }}'
+  #         echo "type=$(echo $TICKET | jq -r '.type')" >> $GITHUB_OUTPUT
+  #         echo "title=$(echo $TICKET | jq -r '.title')" >> $GITHUB_OUTPUT
+  #         echo "priority=$(echo $TICKET | jq -r '.priority')" >> $GITHUB_OUTPUT
+  #         echo "team=$(echo $TICKET | jq -r '.team')" >> $GITHUB_OUTPUT
+  #
+  #     - name: Create Jira issue
+  #       uses: atlassian/gajira-create@v3
+  #       with:
+  #         project: DS
+  #         issuetype: ${{ steps.ticket.outputs.type }}
+  #         summary: ${{ steps.ticket.outputs.title }}
+  #         description: |
+  #           ${{ needs.triage.outputs.summary }}
+  #
+  #           ---
+  #           _Auto-created from GitHub issue/PR by ds-triage-bot_
+  #       env:
+  #         JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+  #         JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+  #         JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+  # ────────────────────────────────────────────────────────────────
+  # Optional: Notify Slack based on owner / risk
+  # Uncomment and configure to enable routing notifications.
+  # Requires SLACK_BOT_TOKEN secret.
+  # ────────────────────────────────────────────────────────────────
+  # notify-slack:
+  #   needs: triage
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Determine channel
+  #       id: channel
+  #       run: |
+  #         OWNER="${{ needs.triage.outputs.owner }}"
+  #         RISK="${{ needs.triage.outputs.risk }}"
+  #         # Route to team-specific channels
+  #         if [ "$OWNER" = "design" ] || [ "$OWNER" = "both" ]; then
+  #           echo "id=C_DS_DESIGN_TRIAGE" >> $GITHUB_OUTPUT
+  #         elif [ "$OWNER" = "engineering" ]; then
+  #           echo "id=C_DS_ENG_TRIAGE" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "id=C_DS_GENERAL" >> $GITHUB_OUTPUT
+  #         fi
+  #         # Flag high-risk items to a dedicated channel
+  #         if [ "$RISK" = "high" ]; then
+  #           echo "urgent=true" >> $GITHUB_OUTPUT
+  #         fi
+  #
+  #     - name: Post to Slack
+  #       uses: slackapi/slack-github-action@v1.27.0
+  #       with:
+  #         channel-id: ${{ steps.channel.outputs.id }}
+  #         slack-message: |
+  #           :label: *DS Triage* — ${{ needs.triage.outputs.category }} (${{ needs.triage.outputs.risk }} risk)
+  #           > ${{ needs.triage.outputs.summary }}
+  #           Effort: ${{ needs.triage.outputs.estimated_effort }} | Owner: ${{ needs.triage.outputs.owner }}
+  #           <${{ github.event.issue.html_url || github.event.pull_request.html_url }}|View on GitHub>
+  #       env:
+  #         SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+  #
+  #     - name: Post urgent alert
+  #       if: steps.channel.outputs.urgent == 'true'
+  #       uses: slackapi/slack-github-action@v1.27.0
+  #       with:
+  #         channel-id: C_DS_URGENT
+  #         slack-message: |
+  #           :rotating_light: *HIGH RISK* triage item
+  #           ${{ needs.triage.outputs.summary }}
+  #           Breaking change: ${{ needs.triage.outputs.breaking_change }}
+  #           <${{ github.event.issue.html_url || github.event.pull_request.html_url }}|View on GitHub>
+  #       env:
+  #         SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

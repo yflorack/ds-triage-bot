@@ -88,14 +88,24 @@ Given an issue or PR (title, body, changed file paths, and heuristic hints), ret
     "metrics": ["metric1"],
     "events": ["event1"]
   },
-  "questions": ["question1"]
+  "questions": ["question1"],
+  "estimated_effort": "xs"|"s"|"m"|"l"|"xl",
+  "related_components": ["Button","Modal","TokenSystem"],
+  "breaking_change": true|false,
+  "migration_notes": "string or empty",
+  "suggested_assignee_role": "string describing ideal reviewer role"
 }
 
 Rules:
 - Return ONLY valid JSON. No prose, no code fences.
 - suggested_labels should use the ds: prefix taxonomy (ds:category:X, ds:area:X, ds:risk:X, ds:owner:X) plus any extra like "needs-metrics", "breaking-change", "deprecation", "needs-design", "needs-eng".
 - If heuristic hints are provided, weigh them but override if the content clearly indicates otherwise.
-- Keep summary concise. 3-7 next_steps. 0-3 questions only if info is genuinely missing.`;
+- Keep summary concise. 3-7 next_steps. 0-3 questions only if info is genuinely missing.
+- estimated_effort: xs=<1h, s=1-4h, m=0.5-2d, l=3-5d, xl=1w+. Base on scope of changes.
+- related_components: list specific design system component names mentioned or affected (e.g. "Button", "Modal", "ColorToken"). Empty array if none.
+- breaking_change: true if the change removes, renames, or alters existing public API/tokens/props in a non-backward-compatible way.
+- migration_notes: if breaking_change is true or category is "migration", provide brief migration guidance. Otherwise empty string.
+- suggested_assignee_role: describe the ideal person to handle this (e.g. "token-specialist", "a11y-reviewer", "component-owner:Button", "design-lead"). Be specific.`;
 // ── Call Claude ─────────────────────────────────────────────────────
 async function triageWithClaude(title, body, changedFiles, hints, model, maxTokens) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -148,7 +158,7 @@ async function triageWithClaude(title, body, changedFiles, hints, model, maxToke
 "use strict";
 
 /**
- * github.ts — GitHub helpers for labeling and commenting.
+ * github.ts — GitHub helpers for labeling, commenting, and ticket scripting.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -191,6 +201,15 @@ exports.postComment = postComment;
 exports.postErrorComment = postErrorComment;
 exports.getChangedFiles = getChangedFiles;
 const core = __importStar(__nccwpck_require__(7484));
+const schema_1 = __nccwpck_require__(5685);
+// ── Effort size display ────────────────────────────────────────────
+const EFFORT_LABELS = {
+    xs: "XS (< 1 hour)",
+    s: "S (1–4 hours)",
+    m: "M (0.5–2 days)",
+    l: "L (3–5 days)",
+    xl: "XL (1+ week)",
+};
 // ── Build labels from payload ──────────────────────────────────────
 function buildLabels(payload) {
     const labels = new Set();
@@ -198,29 +217,54 @@ function buildLabels(payload) {
     labels.add(`ds:area:${payload.product_area}`);
     labels.add(`ds:risk:${payload.risk}`);
     labels.add(`ds:owner:${payload.owner}`);
+    labels.add(`ds:effort:${payload.estimated_effort}`);
+    if (payload.breaking_change) {
+        labels.add("breaking-change");
+    }
     for (const label of payload.suggested_labels) {
         labels.add(label);
     }
     return Array.from(labels);
 }
 // ── Build comment body ─────────────────────────────────────────────
-function buildComment(payload) {
+function buildComment(payload, issueTitle) {
     const lines = [];
+    // ── Main triage section ──────────────────────────────────────────
     lines.push("### DS Triage");
     lines.push("");
-    lines.push(`**Category:** ${payload.category}`);
-    lines.push(`**Area:** ${payload.product_area}`);
-    lines.push(`**Risk:** ${payload.risk}`);
-    lines.push(`**Owner:** ${payload.owner}`);
-    lines.push(`**Confidence:** ${payload.confidence.toFixed(2)}`);
+    lines.push(`| Field | Value |`);
+    lines.push(`|-------|-------|`);
+    lines.push(`| **Category** | \`${payload.category}\` |`);
+    lines.push(`| **Area** | ${payload.product_area} |`);
+    lines.push(`| **Risk** | ${payload.risk} |`);
+    lines.push(`| **Owner** | ${payload.owner} |`);
+    lines.push(`| **Effort** | ${EFFORT_LABELS[payload.estimated_effort] || payload.estimated_effort} |`);
+    lines.push(`| **Confidence** | ${(payload.confidence * 100).toFixed(0)}% |`);
+    if (payload.breaking_change) {
+        lines.push(`| **Breaking** | :warning: Yes |`);
+    }
+    if (payload.related_components.length) {
+        lines.push(`| **Components** | ${payload.related_components.map(c => `\`${c}\``).join(", ")} |`);
+    }
+    if (payload.suggested_assignee_role !== "unspecified") {
+        lines.push(`| **Suggested reviewer** | ${payload.suggested_assignee_role} |`);
+    }
     lines.push("");
     lines.push("**Summary**");
     lines.push(payload.summary);
+    // ── Migration notes (if any) ─────────────────────────────────────
+    if (payload.migration_notes) {
+        lines.push("");
+        lines.push("**Migration notes**");
+        lines.push(payload.migration_notes);
+    }
+    // ── Next steps ───────────────────────────────────────────────────
     lines.push("");
     lines.push("**Next steps**");
     for (const step of payload.next_steps) {
         lines.push(`- [ ] ${step}`);
     }
+    // ── Success signals ──────────────────────────────────────────────
     if (payload.success_signals.metrics.length ||
         payload.success_signals.events.length) {
         lines.push("");
@@ -232,6 +276,7 @@ function buildComment(payload) {
             lines.push(`Events: ${payload.success_signals.events.join(", ")}`);
         }
     }
+    // ── Questions ────────────────────────────────────────────────────
     if (payload.questions.length) {
         lines.push("");
         lines.push("**Questions**");
@@ -239,8 +284,120 @@ function buildComment(payload) {
             lines.push(`- ${q}`);
         }
     }
+    // ── Collapsible: Copy as Jira Story ──────────────────────────────
+    const ticket = (0, schema_1.buildTicketTemplate)(payload, issueTitle);
     lines.push("");
-    lines.push(`<sub>Triaged automatically by ds-triage-bot (confidence ${payload.confidence.toFixed(2)})</sub>`);
+    lines.push(buildJiraCopyBlock(ticket));
+    // ── Collapsible: Copy as JSON ────────────────────────────────────
+    lines.push("");
+    lines.push(buildJsonCopyBlock(payload, ticket));
+    // ── Collapsible: Copy as Linear issue ────────────────────────────
+    lines.push("");
+    lines.push(buildLinearCopyBlock(ticket, payload));
+    // ── Footer ───────────────────────────────────────────────────────
+    lines.push("");
+    lines.push(`<sub>Triaged automatically by ds-triage-bot (confidence ${(payload.confidence * 100).toFixed(0)}%) | effort: ${payload.estimated_effort}</sub>`);
+    return lines.join("\n");
+}
+// ── Jira copy block ────────────────────────────────────────────────
+function buildJiraCopyBlock(ticket) {
+    const lines = [];
+    lines.push(`<details>`);
+    lines.push(`<summary>📋 Copy as Jira ${ticket.type}</summary>`);
+    lines.push("");
+    lines.push(`**Type:** ${ticket.type}`);
+    lines.push(`**Title:** ${ticket.title}`);
+    lines.push(`**Priority:** ${ticket.priority}`);
+    lines.push(`**Team:** ${ticket.team}`);
+    lines.push(`**Effort:** ${EFFORT_LABELS[ticket.effort] || ticket.effort}`);
+    if (ticket.components.length) {
+        lines.push(`**Components:** ${ticket.components.join(", ")}`);
+    }
+    if (ticket.epic_suggestion) {
+        lines.push(`**Suggested Epic:** ${ticket.epic_suggestion}`);
+    }
+    lines.push("");
+    lines.push("**Description:**");
+    lines.push(ticket.description);
+    lines.push("");
+    lines.push("**Acceptance Criteria:**");
+    for (const ac of ticket.acceptance_criteria) {
+        lines.push(`- [ ] ${ac}`);
+    }
+    if (ticket.labels.length) {
+        lines.push("");
+        lines.push(`**Labels:** ${ticket.labels.join(", ")}`);
+    }
+    lines.push("");
+    lines.push(`</details>`);
+    return lines.join("\n");
+}
+// ── JSON copy block ────────────────────────────────────────────────
+function buildJsonCopyBlock(payload, ticket) {
+    const exportObj = {
+        triage: {
+            category: payload.category,
+            product_area: payload.product_area,
+            risk: payload.risk,
+            owner: payload.owner,
+            confidence: payload.confidence,
+            estimated_effort: payload.estimated_effort,
+            breaking_change: payload.breaking_change,
+            related_components: payload.related_components,
+            suggested_assignee_role: payload.suggested_assignee_role,
+            summary: payload.summary,
+            next_steps: payload.next_steps,
+            success_signals: payload.success_signals,
+            questions: payload.questions,
+            migration_notes: payload.migration_notes,
+        },
+        ticket: {
+            type: ticket.type,
+            title: ticket.title,
+            priority: ticket.priority,
+            team: ticket.team,
+            effort: ticket.effort,
+            components: ticket.components,
+            epic_suggestion: ticket.epic_suggestion,
+            acceptance_criteria: ticket.acceptance_criteria,
+            labels: ticket.labels,
+        },
+    };
+    const lines = [];
+    lines.push(`<details>`);
+    lines.push(`<summary>📦 Copy as JSON (for API integration)</summary>`);
+    lines.push("");
+    lines.push("```json");
+    lines.push(JSON.stringify(exportObj, null, 2));
+    lines.push("```");
+    lines.push("");
+    lines.push(`</details>`);
+    return lines.join("\n");
+}
+// ── Linear copy block ──────────────────────────────────────────────
+function buildLinearCopyBlock(ticket, payload) {
+    const priorityMap = {
+        P1: 1,
+        P2: 2,
+        P3: 3,
+        P4: 4,
+    };
+    const linearObj = {
+        title: ticket.title,
+        description: ticket.description,
+        priority: priorityMap[ticket.priority] ?? 3,
+        labels: ticket.labels,
+        estimate: { xs: 1, s: 2, m: 3, l: 5, xl: 8 }[payload.estimated_effort] ?? 3,
+    };
+    const lines = [];
+    lines.push(`<details>`);
+    lines.push(`<summary>📐 Copy as Linear issue</summary>`);
+    lines.push("");
+    lines.push("```json");
+    lines.push(JSON.stringify(linearObj, null, 2));
+    lines.push("```");
+    lines.push("");
+    lines.push(`</details>`);
     return lines.join("\n");
 }
 // ── Apply labels ───────────────────────────────────────────────────
@@ -312,6 +469,7 @@ async function getChangedFiles(octokit, owner, repo, prNumber) {
  *   3. Call Anthropic Claude for AI triage
  *   4. Validate + coerce the JSON response
  *   5. Apply labels and post a triage comment
+ *   6. Set comprehensive Action outputs for downstream steps
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -350,6 +508,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const anthropic_1 = __nccwpck_require__(5900);
+const schema_1 = __nccwpck_require__(5685);
 const github_1 = __nccwpck_require__(6681);
 async function run() {
     try {
@@ -362,7 +521,7 @@ async function run() {
         const model = core.getInput("anthropic_model") ||
             process.env.INPUT_ANTHROPIC_MODEL ||
             "claude-sonnet-4-20250514";
-        const maxTokens = parseInt(core.getInput("max_tokens") || "700", 10);
+        const maxTokens = parseInt(core.getInput("max_tokens") || "1024", 10);
         const dryRun = core.getInput("dry_run") === "true";
         const octokit = github.getOctokit(token);
         const { context } = github;
@@ -412,7 +571,7 @@ async function run() {
         core.info(`Triage result: ${JSON.stringify(triageResult, null, 2)}`);
         // ── Apply results ──────────────────────────────────────────────
         const labels = (0, github_1.buildLabels)(triageResult);
-        const comment = (0, github_1.buildComment)(triageResult);
+        const comment = (0, github_1.buildComment)(triageResult, title);
         if (dryRun) {
             core.info("[DRY RUN] Would apply labels: " + labels.join(", "));
             core.info("[DRY RUN] Would post comment:\n" + comment);
@@ -421,11 +580,31 @@ async function run() {
             await (0, github_1.applyLabels)(octokit, owner, repo, number, labels);
             await (0, github_1.postComment)(octokit, owner, repo, number, comment);
         }
-        // ── Set outputs ────────────────────────────────────────────────
+        // ── Set comprehensive outputs ──────────────────────────────────
+        // Core triage fields
         core.setOutput("category", triageResult.category);
+        core.setOutput("product_area", triageResult.product_area);
         core.setOutput("risk", triageResult.risk);
+        core.setOutput("owner", triageResult.owner);
         core.setOutput("confidence", triageResult.confidence.toString());
         core.setOutput("summary", triageResult.summary);
+        // New enhanced fields
+        core.setOutput("estimated_effort", triageResult.estimated_effort);
+        core.setOutput("breaking_change", triageResult.breaking_change.toString());
+        core.setOutput("related_components", JSON.stringify(triageResult.related_components));
+        core.setOutput("suggested_assignee_role", triageResult.suggested_assignee_role);
+        core.setOutput("migration_notes", triageResult.migration_notes);
+        // Structured arrays as JSON for downstream consumption
+        core.setOutput("next_steps", JSON.stringify(triageResult.next_steps));
+        core.setOutput("questions", JSON.stringify(triageResult.questions));
+        core.setOutput("labels", JSON.stringify(labels));
+        core.setOutput("success_metrics", JSON.stringify(triageResult.success_signals.metrics));
+        core.setOutput("success_events", JSON.stringify(triageResult.success_signals.events));
+        // Full ticket template as JSON
+        const ticket = (0, schema_1.buildTicketTemplate)(triageResult, title);
+        core.setOutput("ticket_json", JSON.stringify(ticket));
+        // Full triage payload as JSON (for any custom integration)
+        core.setOutput("triage_json", JSON.stringify(triageResult));
         core.info("Triage complete!");
     }
     catch (error) {
@@ -454,8 +633,9 @@ run();
  * validate-and-coerce function with safe defaults for every field.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.OWNERS = exports.RISK_LEVELS = exports.PRODUCT_AREAS = exports.CATEGORIES = void 0;
+exports.PRIORITIES = exports.JIRA_ISSUE_TYPES = exports.EFFORT_SIZES = exports.OWNERS = exports.RISK_LEVELS = exports.PRODUCT_AREAS = exports.CATEGORIES = void 0;
 exports.validatePayload = validatePayload;
+exports.buildTicketTemplate = buildTicketTemplate;
 // ── Allowed enum values ────────────────────────────────────────────
 exports.CATEGORIES = [
     "bug",
@@ -481,6 +661,9 @@ exports.OWNERS = [
     "analytics",
     "unknown",
 ];
+exports.EFFORT_SIZES = ["xs", "s", "m", "l", "xl"];
+exports.JIRA_ISSUE_TYPES = ["Bug", "Story", "Task", "Epic"];
+exports.PRIORITIES = ["P1", "P2", "P3", "P4"];
 // ── Helpers ────────────────────────────────────────────────────────
 function oneOf(value, allowed, fallback) {
     if (typeof value === "string" && allowed.includes(value)) {
@@ -500,6 +683,20 @@ function clamp01(value) {
     if (Number.isNaN(n))
         return 0;
     return Math.min(1, Math.max(0, n));
+}
+function safeString(value, fallback = "") {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : fallback;
+}
+function safeBool(value, fallback = false) {
+    if (typeof value === "boolean")
+        return value;
+    if (value === "true")
+        return true;
+    if (value === "false")
+        return false;
+    return fallback;
 }
 // ── Validate & coerce ──────────────────────────────────────────────
 /**
@@ -526,6 +723,80 @@ function validatePayload(raw) {
             events: strArray(obj.success_signals?.events, 8),
         },
         questions: strArray(obj.questions, 3),
+        // New fields
+        estimated_effort: oneOf(obj.estimated_effort, exports.EFFORT_SIZES, "m"),
+        related_components: strArray(obj.related_components, 15),
+        breaking_change: safeBool(obj.breaking_change, false),
+        migration_notes: safeString(obj.migration_notes),
+        suggested_assignee_role: safeString(obj.suggested_assignee_role, "unspecified"),
+    };
+}
+// ── Build ticket template from triage payload ──────────────────────
+const CATEGORY_TO_JIRA_TYPE = {
+    bug: "Bug",
+    enhancement: "Story",
+    docs: "Task",
+    "token-change": "Story",
+    "component-change": "Story",
+    migration: "Epic",
+    question: "Task",
+};
+const RISK_TO_PRIORITY = {
+    high: "P1",
+    medium: "P2",
+    low: "P3",
+};
+const OWNER_TO_TEAM = {
+    design: "Design Systems — Design",
+    engineering: "Design Systems — Engineering",
+    both: "Design Systems — Cross-functional",
+    analytics: "Design Systems — Analytics",
+    unknown: "Design Systems",
+};
+/**
+ * Derive a ready-to-use ticket template from a triage payload.
+ * The `issueTitle` parameter is the original GitHub issue/PR title.
+ */
+function buildTicketTemplate(payload, issueTitle) {
+    const type = CATEGORY_TO_JIRA_TYPE[payload.category];
+    // Build acceptance criteria from next_steps + success_signals
+    const acceptance = [...payload.next_steps];
+    for (const m of payload.success_signals.metrics) {
+        acceptance.push(`Verify metric: ${m}`);
+    }
+    // Construct description
+    const descParts = [payload.summary];
+    if (payload.migration_notes) {
+        descParts.push(`\n*Migration notes:* ${payload.migration_notes}`);
+    }
+    if (payload.breaking_change) {
+        descParts.push("\n*This is a breaking change* — coordinate release comms.");
+    }
+    if (payload.questions.length) {
+        descParts.push(`\n*Open questions:*\n${payload.questions.map((q) => `- ${q}`).join("\n")}`);
+    }
+    // Epic suggestion heuristic
+    let epicSuggestion = "";
+    if (payload.category === "migration") {
+        epicSuggestion = `[Migration] ${payload.product_area}`;
+    }
+    else if (payload.breaking_change) {
+        epicSuggestion = `[Breaking Changes] ${payload.product_area}`;
+    }
+    else if (payload.related_components.length >= 3) {
+        epicSuggestion = `[Multi-component] ${payload.product_area} updates`;
+    }
+    return {
+        type,
+        title: `[DS] ${issueTitle}`,
+        description: descParts.join("\n"),
+        acceptance_criteria: acceptance,
+        labels: payload.suggested_labels,
+        priority: RISK_TO_PRIORITY[payload.risk],
+        team: OWNER_TO_TEAM[payload.owner],
+        effort: payload.estimated_effort,
+        epic_suggestion: epicSuggestion,
+        components: payload.related_components,
     };
 }
 //# sourceMappingURL=schema.js.map

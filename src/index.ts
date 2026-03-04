@@ -11,11 +11,13 @@
  *   3. Call Anthropic Claude for AI triage
  *   4. Validate + coerce the JSON response
  *   5. Apply labels and post a triage comment
+ *   6. Set comprehensive Action outputs for downstream steps
  */
 
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { computeHeuristics, triageWithClaude } from "./anthropic";
+import { buildTicketTemplate } from "./schema";
 import {
   applyLabels,
   buildComment,
@@ -39,7 +41,7 @@ async function run(): Promise<void> {
       process.env.INPUT_ANTHROPIC_MODEL ||
       "claude-sonnet-4-20250514";
 
-    const maxTokens = parseInt(core.getInput("max_tokens") || "700", 10);
+    const maxTokens = parseInt(core.getInput("max_tokens") || "1024", 10);
     const dryRun = core.getInput("dry_run") === "true";
 
     const octokit = github.getOctokit(token);
@@ -110,7 +112,7 @@ async function run(): Promise<void> {
 
     // ── Apply results ──────────────────────────────────────────────
     const labels = buildLabels(triageResult);
-    const comment = buildComment(triageResult);
+    const comment = buildComment(triageResult, title);
 
     if (dryRun) {
       core.info("[DRY RUN] Would apply labels: " + labels.join(", "));
@@ -120,11 +122,44 @@ async function run(): Promise<void> {
       await postComment(octokit, owner, repo, number, comment);
     }
 
-    // ── Set outputs ────────────────────────────────────────────────
+    // ── Set comprehensive outputs ──────────────────────────────────
+    // Core triage fields
     core.setOutput("category", triageResult.category);
+    core.setOutput("product_area", triageResult.product_area);
     core.setOutput("risk", triageResult.risk);
+    core.setOutput("owner", triageResult.owner);
     core.setOutput("confidence", triageResult.confidence.toString());
     core.setOutput("summary", triageResult.summary);
+
+    // New enhanced fields
+    core.setOutput("estimated_effort", triageResult.estimated_effort);
+    core.setOutput("breaking_change", triageResult.breaking_change.toString());
+    core.setOutput(
+      "related_components",
+      JSON.stringify(triageResult.related_components)
+    );
+    core.setOutput("suggested_assignee_role", triageResult.suggested_assignee_role);
+    core.setOutput("migration_notes", triageResult.migration_notes);
+
+    // Structured arrays as JSON for downstream consumption
+    core.setOutput("next_steps", JSON.stringify(triageResult.next_steps));
+    core.setOutput("questions", JSON.stringify(triageResult.questions));
+    core.setOutput("labels", JSON.stringify(labels));
+    core.setOutput(
+      "success_metrics",
+      JSON.stringify(triageResult.success_signals.metrics)
+    );
+    core.setOutput(
+      "success_events",
+      JSON.stringify(triageResult.success_signals.events)
+    );
+
+    // Full ticket template as JSON
+    const ticket = buildTicketTemplate(triageResult, title);
+    core.setOutput("ticket_json", JSON.stringify(ticket));
+
+    // Full triage payload as JSON (for any custom integration)
+    core.setOutput("triage_json", JSON.stringify(triageResult));
 
     core.info("Triage complete!");
   } catch (error) {
